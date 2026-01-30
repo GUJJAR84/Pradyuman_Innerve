@@ -169,10 +169,10 @@ class VoiceLockGUI:
         """Authenticate user with voice"""
         username = self.selected_user.get()
         
-        # Show loading dialog
+        # Show loading dialog with countdown
         loading_window = ctk.CTkToplevel(self.root)
         loading_window.title("Authenticating")
-        loading_window.geometry("400x250")
+        loading_window.geometry("450x380")
         loading_window.transient(self.root)
         loading_window.grab_set()
         
@@ -181,24 +181,92 @@ class VoiceLockGUI:
             text=f"🎤 Authenticating {username}",
             font=("Segoe UI", 18, "bold")
         )
-        loading_label.pack(pady=(40, 20))
+        loading_label.pack(pady=(30, 10))
+        
+        countdown_label = ctk.CTkLabel(
+            loading_window,
+            text="",
+            font=("Segoe UI", 48, "bold"),
+            text_color="#2563eb"
+        )
+        countdown_label.pack(pady=15)
         
         status_label = ctk.CTkLabel(
             loading_window,
-            text="Please speak your passphrase...",
+            text="Get ready to speak...",
             font=("Segoe UI", 14)
         )
         status_label.pack(pady=10)
         
-        progress = ctk.CTkProgressBar(loading_window, mode="indeterminate")
-        progress.pack(pady=20, padx=40, fill="x")
-        progress.start()
+        timer_label = ctk.CTkLabel(
+            loading_window,
+            text="",
+            font=("Segoe UI", 16, "bold"),
+            text_color="#059669"
+        )
+        timer_label.pack(pady=5)
+        
+        progress = ctk.CTkProgressBar(loading_window, width=350)
+        progress.pack(pady=20)
+        progress.set(0)
         
         def authenticate():
+            import time
+            import sounddevice as sd
+            
             try:
-                authenticated, distance = self.voice_auth.authenticate(username, duration=5)
+                # Countdown 3, 2, 1
+                for count in [3, 2, 1]:
+                    loading_window.after(0, lambda c=count: countdown_label.configure(text=str(c)))
+                    loading_window.after(0, lambda: status_label.configure(text="Recording will start in..."))
+                    time.sleep(1)
                 
-                loading_window.after(0, progress.stop)
+                # Recording
+                duration = 5
+                loading_window.after(0, lambda: countdown_label.configure(text="🔴"))
+                loading_window.after(0, lambda: status_label.configure(text="🔴 RECORDING NOW! Please speak..."))
+                
+                # Start recording with timer updates
+                start_time = time.time()
+                audio_data = sd.rec(
+                    int(duration * self.voice_auth.sample_rate),
+                    samplerate=self.voice_auth.sample_rate,
+                    channels=1,
+                    dtype='float32'
+                )
+                
+                # Update timer during recording
+                while time.time() - start_time < duration:
+                    elapsed = time.time() - start_time
+                    remaining = duration - elapsed
+                    progress_val = elapsed / duration
+                    loading_window.after(0, lambda p=progress_val: progress.set(p))
+                    loading_window.after(0, lambda r=remaining: timer_label.configure(text=f"⏱️ {r:.1f}s remaining"))
+                    time.sleep(0.1)
+                
+                sd.wait()
+                audio_data = audio_data.squeeze()
+                
+                # Processing
+                loading_window.after(0, lambda: countdown_label.configure(text=""))
+                loading_window.after(0, lambda: status_label.configure(text="Processing..."))
+                loading_window.after(0, lambda: timer_label.configure(text=""))
+                loading_window.after(0, lambda: progress.set(1.0))
+                
+                # Preprocess and extract embedding
+                audio_data = self.voice_auth.preprocess_audio(audio_data)
+                
+                if username not in self.voice_auth.enrolled_embeddings:
+                    raise ValueError(f"User {username} not enrolled")
+                
+                stored_embedding = self.voice_auth.enrolled_embeddings[username]['embedding']
+                test_embedding = self.voice_auth.extract_embedding(audio_data)
+                distance = self.voice_auth.compute_similarity(test_embedding, stored_embedding)
+                authenticated = distance < self.voice_auth.threshold
+                
+                # Update history
+                self.voice_auth._update_auth_history(username, distance, authenticated)
+                
                 loading_window.after(0, loading_window.destroy)
                 
                 if authenticated:
@@ -214,7 +282,6 @@ class VoiceLockGUI:
                         f"❌ Voice authentication failed!\n\nDistance: {distance:.4f}\nThreshold: {self.voice_auth.threshold}\n\nPlease try again."
                     )
             except Exception as e:
-                loading_window.after(0, progress.stop)
                 loading_window.after(0, loading_window.destroy)
                 messagebox.showerror("Error", f"Authentication error: {str(e)}")
         
@@ -326,7 +393,7 @@ class VoiceLockGUI:
         # Create enrollment window
         enroll_window = ctk.CTkToplevel(self.root)
         enroll_window.title("Voice Enrollment")
-        enroll_window.geometry("500x400")
+        enroll_window.geometry("500x450")
         enroll_window.transient(self.root)
         enroll_window.grab_set()
         
@@ -339,14 +406,22 @@ class VoiceLockGUI:
         
         sample_label = ctk.CTkLabel(
             enroll_window,
-            text="Sample 1 of 5",
-            font=("Segoe UI", 16)
+            text="Preparing...",
+            font=("Segoe UI", 18, "bold")
         )
         sample_label.pack(pady=10)
         
+        countdown_label = ctk.CTkLabel(
+            enroll_window,
+            text="",
+            font=("Segoe UI", 48, "bold"),
+            text_color="#2563eb"
+        )
+        countdown_label.pack(pady=20)
+        
         instruction = ctk.CTkLabel(
             enroll_window,
-            text="Please speak your passphrase...",
+            text="Get ready to speak...",
             font=("Segoe UI", 14),
             text_color="gray"
         )
@@ -359,24 +434,118 @@ class VoiceLockGUI:
         status = ctk.CTkLabel(
             enroll_window,
             text="",
-            font=("Segoe UI", 12)
+            font=("Segoe UI", 12),
+            text_color="#059669"
         )
         status.pack(pady=10)
         
         def enroll():
+            import time
+            import sounddevice as sd
+            import numpy as np
+            from pathlib import Path
+            
             try:
-                success = self.voice_auth.enroll_user(username, num_samples=5, duration=5)
+                num_samples = 5
+                duration = 5
+                embeddings = []
+                
+                for i in range(num_samples):
+                    # Update sample label
+                    enroll_window.after(0, lambda i=i: sample_label.configure(
+                        text=f"Sample {i+1} of {num_samples}"
+                    ))
+                    enroll_window.after(0, lambda: instruction.configure(
+                        text="Recording will start in..."
+                    ))
+                    enroll_window.after(0, lambda: progress.set((i) / num_samples))
+                    
+                    # Countdown 3, 2, 1
+                    for count in [3, 2, 1]:
+                        enroll_window.after(0, lambda c=count: countdown_label.configure(
+                            text=str(c)
+                        ))
+                        time.sleep(1)
+                    
+                    # Recording
+                    enroll_window.after(0, lambda: countdown_label.configure(text="🔴"))
+                    enroll_window.after(0, lambda: instruction.configure(
+                        text="🔴 RECORDING NOW! Please speak..."
+                    ))
+                    
+                    # Record audio
+                    audio_data = sd.rec(
+                        int(duration * self.voice_auth.sample_rate),
+                        samplerate=self.voice_auth.sample_rate,
+                        channels=1,
+                        dtype='float32'
+                    )
+                    sd.wait()
+                    audio_data = audio_data.squeeze()
+                    
+                    # Preprocess
+                    audio_data = self.voice_auth.preprocess_audio(audio_data)
+                    
+                    # Extract embedding
+                    enroll_window.after(0, lambda: instruction.configure(
+                        text="Processing recording..."
+                    ))
+                    embedding = self.voice_auth.extract_embedding(audio_data)
+                    embeddings.append(embedding)
+                    
+                    # Save sample
+                    user_dir = Path("voice_profiles") / username
+                    user_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    import soundfile as sf
+                    sf.write(user_dir / f"sample_{i+1}.wav", audio_data, self.voice_auth.sample_rate)
+                    
+                    # Update status
+                    enroll_window.after(0, lambda i=i: status.configure(
+                        text=f"✅ Sample {i+1} recorded successfully!"
+                    ))
+                    enroll_window.after(0, lambda: countdown_label.configure(text=""))
+                    
+                    time.sleep(0.5)
+                
+                # Average embeddings
+                enroll_window.after(0, lambda: instruction.configure(
+                    text="Creating voice profile..."
+                ))
+                enroll_window.after(0, lambda: progress.set(1.0))
+                
+                avg_embedding = np.mean(embeddings, axis=0)
+                
+                # Calculate consistency
+                distances = []
+                for emb in embeddings:
+                    dist = self.voice_auth.compute_similarity(emb, avg_embedding)
+                    distances.append(dist)
+                mean_dist = np.mean(distances)
+                
+                # Store enrollment
+                from datetime import datetime
+                self.voice_auth.enrolled_embeddings[username] = {
+                    'embedding': avg_embedding,
+                    'num_samples': num_samples,
+                    'enrolled_at': datetime.now().isoformat(),
+                    'mean_distance': float(mean_dist)
+                }
+                
+                # Save to disk
+                self.voice_auth._save_enrollments()
                 
                 enroll_window.after(0, enroll_window.destroy)
                 
-                if success:
-                    messagebox.showinfo(
-                        "Success",
-                        f"✅ User '{username}' enrolled successfully!\n\nYou can now use your voice to lock/unlock folders."
-                    )
-                    self.show_login_screen()
-                else:
-                    messagebox.showerror("Error", "Enrollment failed. Please try again.")
+                messagebox.showinfo(
+                    "Success",
+                    f"✅ User '{username}' enrolled successfully!\\n\\n"
+                    f"Samples recorded: {num_samples}\\n"
+                    f"Consistency score: {(1-mean_dist)*100:.1f}%\\n\\n"
+                    f"You can now use your voice to lock/unlock folders."
+                )
+                self.show_login_screen()
+                
             except Exception as e:
                 enroll_window.after(0, enroll_window.destroy)
                 messagebox.showerror("Error", f"Enrollment error: {str(e)}")
@@ -479,6 +648,27 @@ class VoiceLockGUI:
         )
         stats_btn.pack(pady=10, padx=20, fill="x")
         
+        # Separator
+        separator = ctk.CTkLabel(
+            sidebar,
+            text="───────────",
+            font=("Segoe UI", 10),
+            text_color="gray"
+        )
+        separator.pack(pady=15)
+        
+        # Multi-folder lock button
+        multi_lock_btn = ctk.CTkButton(
+            sidebar,
+            text="🔒📁 Lock Multiple Folders",
+            command=self.show_multi_lock_dialog,
+            height=50,
+            font=("Segoe UI", 13),
+            fg_color="#0891b2",
+            hover_color="#0e7490"
+        )
+        multi_lock_btn.pack(pady=10, padx=20, fill="x")
+        
         # Right panel - Locked folders list
         right_panel = ctk.CTkFrame(content)
         right_panel.pack(side="right", fill="both", expand=True)
@@ -498,6 +688,10 @@ class VoiceLockGUI:
     
     def refresh_folders_list(self):
         """Refresh the locked folders list"""
+        # Safety check - only refresh if folders_frame exists
+        if not hasattr(self, 'folders_frame') or self.folders_frame is None:
+            return
+        
         # Clear existing widgets
         for widget in self.folders_frame.winfo_children():
             widget.destroy()
@@ -592,37 +786,91 @@ class VoiceLockGUI:
             messagebox.showwarning("Already Locked", "This folder is already locked!")
             return
         
-        # Show authentication dialog
+        # Show authentication dialog with countdown
         auth_window = ctk.CTkToplevel(self.root)
-        auth_window.title("Authenticating")
-        auth_window.geometry("400x250")
+        auth_window.title("Authenticating to Lock")
+        auth_window.geometry("450x380")
         auth_window.transient(self.root)
         auth_window.grab_set()
         
         title = ctk.CTkLabel(
             auth_window,
-            text="🔐 Voice Authentication",
+            text="🔐 Authenticate to Lock Folder",
             font=("Segoe UI", 18, "bold")
         )
         title.pack(pady=(30, 10))
         
+        countdown_label = ctk.CTkLabel(
+            auth_window,
+            text="",
+            font=("Segoe UI", 48, "bold"),
+            text_color="#2563eb"
+        )
+        countdown_label.pack(pady=15)
+        
         instruction = ctk.CTkLabel(
             auth_window,
-            text="Please speak to authenticate...",
+            text="Get ready to speak...",
             font=("Segoe UI", 14)
         )
         instruction.pack(pady=10)
         
-        progress = ctk.CTkProgressBar(auth_window, mode="indeterminate")
-        progress.pack(pady=20, padx=40, fill="x")
-        progress.start()
+        timer_label = ctk.CTkLabel(
+            auth_window,
+            text="",
+            font=("Segoe UI", 16, "bold"),
+            text_color="#059669"
+        )
+        timer_label.pack(pady=5)
+        
+        progress = ctk.CTkProgressBar(auth_window, width=350)
+        progress.pack(pady=20)
+        progress.set(0)
         
         def authenticate_and_lock():
+            import time, sounddevice as sd
+            
             try:
-                # Authenticate
-                authenticated, distance = self.voice_auth.authenticate(self.current_user, duration=5)
+                # Countdown
+                for count in [3, 2, 1]:
+                    auth_window.after(0, lambda c=count: countdown_label.configure(text=str(c)))
+                    auth_window.after(0, lambda: instruction.configure(text="Recording will start in..."))
+                    time.sleep(1)
                 
-                auth_window.after(0, progress.stop)
+                # Recording
+                duration = 5
+                auth_window.after(0, lambda: countdown_label.configure(text="🔴"))
+                auth_window.after(0, lambda: instruction.configure(text="🔴 RECORDING! Speak now..."))
+                
+                start_time = time.time()
+                audio_data = sd.rec(int(duration * self.voice_auth.sample_rate),
+                                   samplerate=self.voice_auth.sample_rate, channels=1, dtype='float32')
+                
+                while time.time() - start_time < duration:
+                    elapsed = time.time() - start_time
+                    remaining = duration - elapsed
+                    progress_val = elapsed / duration
+                    auth_window.after(0, lambda p=progress_val: progress.set(p))
+                    auth_window.after(0, lambda r=remaining: timer_label.configure(text=f"⏱️ {r:.1f}s remaining"))
+                    time.sleep(0.1)
+                
+                sd.wait()
+                audio_data = audio_data.squeeze()
+                
+                # Processing
+                auth_window.after(0, lambda: countdown_label.configure(text=""))
+                auth_window.after(0, lambda: instruction.configure(text="Processing..."))
+                auth_window.after(0, lambda: timer_label.configure(text=""))
+                auth_window.after(0, lambda: progress.set(1.0))
+                
+                # Authenticate
+                audio_data = self.voice_auth.preprocess_audio(audio_data)
+                stored_embedding = self.voice_auth.enrolled_embeddings[self.current_user]['embedding']
+                test_embedding = self.voice_auth.extract_embedding(audio_data)
+                distance = self.voice_auth.compute_similarity(test_embedding, stored_embedding)
+                authenticated = distance < self.voice_auth.threshold
+                self.voice_auth._update_auth_history(self.current_user, distance, authenticated)
+                
                 auth_window.after(0, auth_window.destroy)
                 
                 if not authenticated:
@@ -727,37 +975,91 @@ class VoiceLockGUI:
             messagebox.showerror("Error", "Folder not found in locked list")
             return
         
-        # Show authentication dialog
+        # Show authentication dialog with countdown
         auth_window = ctk.CTkToplevel(self.root)
-        auth_window.title("Authenticating")
-        auth_window.geometry("400x250")
+        auth_window.title("Authenticating to Unlock")
+        auth_window.geometry("450x380")
         auth_window.transient(self.root)
         auth_window.grab_set()
         
         title = ctk.CTkLabel(
             auth_window,
-            text="🔐 Voice Authentication",
+            text="🔐 Authenticate to Unlock Folder",
             font=("Segoe UI", 18, "bold")
         )
         title.pack(pady=(30, 10))
         
+        countdown_label = ctk.CTkLabel(
+            auth_window,
+            text="",
+            font=("Segoe UI", 48, "bold"),
+            text_color="#2563eb"
+        )
+        countdown_label.pack(pady=15)
+        
         instruction = ctk.CTkLabel(
             auth_window,
-            text="Please speak to unlock...",
+            text="Get ready to speak...",
             font=("Segoe UI", 14)
         )
         instruction.pack(pady=10)
         
-        progress = ctk.CTkProgressBar(auth_window, mode="indeterminate")
-        progress.pack(pady=20, padx=40, fill="x")
-        progress.start()
+        timer_label = ctk.CTkLabel(
+            auth_window,
+            text="",
+            font=("Segoe UI", 16, "bold"),
+            text_color="#059669"
+        )
+        timer_label.pack(pady=5)
+        
+        progress = ctk.CTkProgressBar(auth_window, width=350)
+        progress.pack(pady=20)
+        progress.set(0)
         
         def authenticate_and_unlock():
+            import time, sounddevice as sd
+            
             try:
-                # Authenticate
-                authenticated, distance = self.voice_auth.authenticate(self.current_user, duration=5)
+                # Countdown
+                for count in [3, 2, 1]:
+                    auth_window.after(0, lambda c=count: countdown_label.configure(text=str(c)))
+                    auth_window.after(0, lambda: instruction.configure(text="Recording will start in..."))
+                    time.sleep(1)
                 
-                auth_window.after(0, progress.stop)
+                # Recording
+                duration = 5
+                auth_window.after(0, lambda: countdown_label.configure(text="🔴"))
+                auth_window.after(0, lambda: instruction.configure(text="🔴 RECORDING! Speak now..."))
+                
+                start_time = time.time()
+                audio_data = sd.rec(int(duration * self.voice_auth.sample_rate),
+                                   samplerate=self.voice_auth.sample_rate, channels=1, dtype='float32')
+                
+                while time.time() - start_time < duration:
+                    elapsed = time.time() - start_time
+                    remaining = duration - elapsed
+                    progress_val = elapsed / duration
+                    auth_window.after(0, lambda p=progress_val: progress.set(p))
+                    auth_window.after(0, lambda r=remaining: timer_label.configure(text=f"⏱️ {r:.1f}s remaining"))
+                    time.sleep(0.1)
+                
+                sd.wait()
+                audio_data = audio_data.squeeze()
+                
+                # Processing
+                auth_window.after(0, lambda: countdown_label.configure(text=""))
+                auth_window.after(0, lambda: instruction.configure(text="Processing..."))
+                auth_window.after(0, lambda: timer_label.configure(text=""))
+                auth_window.after(0, lambda: progress.set(1.0))
+                
+                # Authenticate  
+                audio_data = self.voice_auth.preprocess_audio(audio_data)
+                stored_embedding = self.voice_auth.enrolled_embeddings[self.current_user]['embedding']
+                test_embedding = self.voice_auth.extract_embedding(audio_data)
+                distance = self.voice_auth.compute_similarity(test_embedding, stored_embedding)
+                authenticated = distance < self.voice_auth.threshold
+                self.voice_auth._update_auth_history(self.current_user, distance, authenticated)
+                
                 auth_window.after(0, auth_window.destroy)
                 
                 if not authenticated:

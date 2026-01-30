@@ -88,7 +88,13 @@ tmp/
 
 # Encrypted Files
 *.encrypted
-
+.html
 # Backup Files
 *.bak
 *.backup
+
+# Documentation & Learning Guides (Generated)
+CLEANUP_SUMMARY.md
+COMPLETE_LIBRARY_DETAILS.md
+PRESENTATION_CHEAT_SHEET.md
+COMPLETE_BEGINNERS_GUIDE.html
