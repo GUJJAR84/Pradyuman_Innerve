@@ -364,10 +364,11 @@ def main():
         print("5. 👥 List enrolled users")
         print("6. 📜 Show access log")
         print("7. ℹ️  System information")
-        print("8. 🚪 Exit")
+        print("8. � Authentication statistics")
+        print("9. �🚪 Exit")
         print("-"*70)
         
-        choice = input("\nEnter choice (1-8): ").strip()
+        choice = input("\nEnter choice (1-9): ").strip()
         
         try:
             if choice == '1':
@@ -442,6 +443,61 @@ def main():
                 print(f"   System created: {system.config['created_at'][:19]}")
             
             elif choice == '8':
+                enrolled_users = system.voice_auth.list_enrolled_users()
+                if not enrolled_users:
+                    print("\n⚠️  No users enrolled yet!")
+                    continue
+                
+                print(f"\n👥 Enrolled users: {', '.join(enrolled_users)}")
+                username = input("\n📝 Enter username to view stats: ").strip()
+                
+                if username and username in enrolled_users:
+                    stats = system.voice_auth.get_user_stats(username)
+                    
+                    print(f"\n{'='*70}")
+                    print(f"📊 AUTHENTICATION STATISTICS: {username}")
+                    print(f"{'='*70}")
+                    
+                    if stats['total_attempts'] == 0:
+                        print("\n⚠️  No authentication attempts yet.")
+                    else:
+                        print(f"\n📈 Overall Performance:")
+                        print(f"   Total attempts: {stats['total_attempts']}")
+                        print(f"   Successful: {stats['successful']} ✅")
+                        print(f"   Failed: {stats['failed']} ❌")
+                        print(f"   Success rate: {stats['success_rate']*100:.1f}%")
+                        
+                        if 'avg_success_distance' in stats:
+                            print(f"\n🎯 Distance Metrics:")
+                            print(f"   Average distance: {stats['avg_success_distance']:.4f}")
+                            print(f"   Std deviation: {stats['std_success_distance']:.4f}")
+                            print(f"   Current threshold: {system.voice_auth.threshold}")
+                            print(f"   Suggested threshold: {stats.get('suggested_threshold', 'N/A'):.4f}")
+                            
+                            # Show recommendation
+                            if stats['suggested_threshold'] < system.voice_auth.threshold - 0.05:
+                                print(f"\n💡 Recommendation: Consider lowering threshold to {stats['suggested_threshold']:.4f}")
+                                print(f"   (Your voice is very consistent!)")
+                            elif stats['suggested_threshold'] > system.voice_auth.threshold + 0.05:
+                                print(f"\n⚠️  Warning: You may need to raise threshold to {stats['suggested_threshold']:.4f}")
+                                print(f"   (High variability in authentication)")
+                            else:
+                                print(f"\n✅ Your threshold is optimal!")
+                        
+                        # Show recent attempts
+                        if len(stats['distances']) > 0:
+                            print(f"\n📝 Recent Attempts (last {min(10, len(stats['distances']))}):") 
+                            recent_count = min(10, len(stats['distances']))
+                            for i in range(recent_count):
+                                idx = -(i+1)
+                                dist = stats['distances'][idx]
+                                time = stats['timestamps'][idx][:19]
+                                status = "✅" if dist < system.voice_auth.threshold else "❌"
+                                print(f"   {status} {time} - Distance: {dist:.4f}")
+                else:
+                    print(f"\n❌ User '{username}' not found!")
+            
+            elif choice == '9':
                 print("\n" + "="*70)
                 print("👋 Thank you for using Voice-Authenticated Folder Lock!")
                 print("🔒 Stay secure!")
@@ -449,7 +505,7 @@ def main():
                 break
             
             else:
-                print("\n❌ Invalid choice! Please enter 1-8.")
+                print("\n❌ Invalid choice! Please enter 1-9.")
         
         except KeyboardInterrupt:
             print("\n\n⚠️  Interrupted by user.")

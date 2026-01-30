@@ -23,3 +23,6 @@ huggingface_hub==0.20.3
 
 # Optional but recommended
 pyaudio>=0.2.13  # Alternative audio backend
+
+# GUI (for gui_app.py)
+customtkinter>=5.2.0

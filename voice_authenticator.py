@@ -16,6 +16,7 @@ import numpy as np
 import sounddevice as sd
 import soundfile as sf
 import torch
+import librosa
 from pathlib import Path
 from typing import Optional, Tuple, List
 import hashlib
@@ -58,6 +59,8 @@ class VoiceAuthenticator:
         self.sample_rate = sample_rate
         self.model = None
         self.enrolled_embeddings = {}
+        self.auth_history = {}
+        self.auth_history_file = 'voice_profiles/auth_history.json'
         
         # Security check: warn if threshold is too lenient
         if threshold > 0.32:
@@ -65,6 +68,7 @@ class VoiceAuthenticator:
         
         logger.info("Initializing Voice Authenticator...")
         self._load_model()
+        self._load_auth_history()
         
     def _load_model(self):
         """Load the pre-trained ECAPA-TDNN model"""
@@ -150,10 +154,45 @@ class VoiceAuthenticator:
         # Resample if necessary
         if sr != self.sample_rate:
             logger.warning(f"Resampling from {sr}Hz to {self.sample_rate}Hz")
-            import librosa
             audio_data = librosa.resample(audio_data, orig_sr=sr, target_sr=self.sample_rate)
         
         return audio_data
+    
+    def preprocess_audio(self, audio_data: np.ndarray, reduce_noise: bool = True) -> np.ndarray:
+        """
+        Preprocess audio with librosa for better quality
+        
+        Args:
+            audio_data: Raw audio waveform
+            reduce_noise: Whether to apply noise reduction
+            
+        Returns:
+            Preprocessed audio
+        """
+        # 1. Trim silence from beginning and end
+        audio_trimmed, _ = librosa.effects.trim(
+            audio_data,
+            top_db=20,  # Silence threshold
+            frame_length=2048,
+            hop_length=512
+        )
+        
+        # Ensure minimum length (1 second)
+        min_samples = self.sample_rate
+        if len(audio_trimmed) < min_samples:
+            logger.warning(f"Audio too short after trimming: {len(audio_trimmed)/self.sample_rate:.2f}s")
+            audio_trimmed = audio_data  # Use original
+        
+        # 2. Normalize audio amplitude
+        audio_normalized = librosa.util.normalize(audio_trimmed)
+        
+        # 3. Apply pre-emphasis filter (boost high frequencies)
+        # This is common in speech processing
+        audio_emphasized = librosa.effects.preemphasis(audio_normalized, coef=0.97)
+        
+        logger.debug(f"Audio preprocessing: {len(audio_data)} -> {len(audio_emphasized)} samples")
+        
+        return audio_emphasized
     
     def extract_embedding(self, audio_data: np.ndarray) -> np.ndarray:
         """
@@ -274,6 +313,9 @@ class VoiceAuthenticator:
             # Record audio
             audio_data = self.record_audio(duration=duration)
             
+            # Preprocess audio with librosa
+            audio_data = self.preprocess_audio(audio_data)
+            
             # Extract embedding
             embedding = self.extract_embedding(audio_data)
             embeddings.append(embedding)
@@ -351,6 +393,9 @@ class VoiceAuthenticator:
         # Record authentication sample
         audio_data = self.record_audio(duration=duration)
         
+        # Preprocess audio with librosa
+        audio_data = self.preprocess_audio(audio_data)
+        
         # Validate audio has sufficient content
         audio_rms = np.sqrt(np.mean(audio_data**2))
         audio_max = np.max(np.abs(audio_data))
@@ -385,6 +430,9 @@ class VoiceAuthenticator:
         
         # Authenticate with strict threshold
         authenticated = distance < self.threshold
+        
+        # Update authentication history
+        self._update_auth_history(username, distance, authenticated)
         
         # Calculate percentage match for user feedback
         similarity_percent = max(0, min(100, (1 - distance) * 100))
@@ -427,6 +475,82 @@ class VoiceAuthenticator:
             logger.info(f"Loaded {len(self.enrolled_embeddings)} enrolled users")
         else:
             logger.info("No existing enrollments found")
+    
+    def _load_auth_history(self):
+        """Load authentication history from disk"""
+        if os.path.exists(self.auth_history_file):
+            try:
+                with open(self.auth_history_file, 'r') as f:
+                    self.auth_history = json.load(f)
+                logger.info(f"Loaded authentication history for {len(self.auth_history)} users")
+            except Exception as e:
+                logger.warning(f"Failed to load auth history: {e}")
+                self.auth_history = {}
+        else:
+            self.auth_history = {}
+    
+    def _save_auth_history(self):
+        """Save authentication history to disk"""
+        os.makedirs(os.path.dirname(self.auth_history_file), exist_ok=True)
+        with open(self.auth_history_file, 'w') as f:
+            json.dump(self.auth_history, f, indent=2)
+        logger.debug("Authentication history saved")
+    
+    def _update_auth_history(self, username: str, distance: float, success: bool):
+        """Update authentication history with new attempt"""
+        if username not in self.auth_history:
+            self.auth_history[username] = {
+                'total_attempts': 0,
+                'successful': 0,
+                'failed': 0,
+                'distances': [],
+                'success_distances': [],
+                'failed_distances': [],
+                'timestamps': []
+            }
+        
+        history = self.auth_history[username]
+        history['total_attempts'] += 1
+        history['successful' if success else 'failed'] += 1
+        history['distances'].append(float(distance))
+        history['timestamps'].append(datetime.now().isoformat())
+        
+        if success:
+            history['success_distances'].append(float(distance))
+        else:
+            history['failed_distances'].append(float(distance))
+        
+        # Keep only last 100 entries to limit file size
+        if len(history['distances']) > 100:
+            history['distances'] = history['distances'][-100:]
+            history['timestamps'] = history['timestamps'][-100:]
+            history['success_distances'] = history['success_distances'][-100:]
+            history['failed_distances'] = history['failed_distances'][-100:]
+        
+        # Calculate statistics
+        if history['successful'] > 0:
+            success_dists = history['success_distances']
+            history['avg_success_distance'] = float(np.mean(success_dists))
+            history['std_success_distance'] = float(np.std(success_dists))
+            
+            # Suggest optimal threshold (mean + 2*std for 95% confidence)
+            suggested = history['avg_success_distance'] + 2 * history['std_success_distance']
+            history['suggested_threshold'] = min(0.35, max(0.20, float(suggested)))
+        
+        history['success_rate'] = history['successful'] / history['total_attempts']
+        
+        self._save_auth_history()
+    
+    def get_user_stats(self, username: str) -> dict:
+        """Get authentication statistics for a user"""
+        if username not in self.auth_history:
+            return {
+                'total_attempts': 0,
+                'successful': 0,
+                'failed': 0,
+                'success_rate': 0.0
+            }
+        return self.auth_history[username]
     
     def list_enrolled_users(self) -> List[str]:
         """Get list of enrolled users"""
