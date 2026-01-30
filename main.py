@@ -181,6 +181,16 @@ class VoiceFolderLock:
         print(f"\n🔒 Encrypting folder...")
         stats = self.encryption.encrypt_folder(str(folder_path), delete_original=False)
         
+        # Delete original files to lock folder
+        print(f"\n🗑️  Deleting original files to lock folder...")
+        deleted = 0
+        for root, dirs, files in os.walk(str(folder_path)):
+            for file in files:
+                if not file.endswith('.encrypted'):
+                    original_file = os.path.join(root, file)
+                    os.remove(original_file)
+                    deleted += 1
+        
         # Store folder info
         self.config['locked_folders'][str(folder_path)] = {
             'owner': username,
@@ -190,11 +200,11 @@ class VoiceFolderLock:
         }
         self._save_config()
         
-        print(f"\n✅ Folder locked successfully!")
+        print(f"\n✅ Folder LOCKED successfully!")
         print(f"   Owner: {username}")
         print(f"   Files encrypted: {stats['encrypted_files']}")
-        print(f"\n⚠️  IMPORTANT: Original files are preserved for safety.")
-        print(f"   Delete originals manually if needed.")
+        print(f"   Original files deleted: {deleted}")
+        print(f"\n🔒 Folder is now inaccessible - authentication required to unlock!")
         
         self._log_access(username, str(folder_path), 'lock', True)
     
@@ -238,7 +248,8 @@ class VoiceFolderLock:
         
         # Load encryption key
         key_file = folder_info['key_file']
-        if not os.path.exists(key_file):
+        key_path = Path(key_file)
+        if not key_path.exists():
             print(f"\n❌ Encryption key not found: {key_file}")
             return
         
@@ -251,10 +262,26 @@ class VoiceFolderLock:
         print(f"\n🔓 Decrypting folder...")
         stats = self.encryption.decrypt_folder(str(folder_path), delete_encrypted=False)
         
+        # Remove from locked folders list
+        del self.config['locked_folders'][str(folder_path)]
+        self._save_config()
+        
         print(f"\n✅ Folder unlocked successfully!")
         print(f"   Files decrypted: {stats['decrypted_files']}")
         print(f"\n💡 Encrypted files are preserved for safety.")
-        print(f"   Delete them manually if needed.")
+        
+        # Ask if user wants to delete encrypted files
+        delete_encrypted = input("   Delete encrypted files? (yes/no): ").strip().lower()
+        if delete_encrypted == 'yes':
+            # Delete .encrypted files
+            deleted = 0
+            for root, dirs, files in os.walk(str(folder_path)):
+                for file in files:
+                    if file.endswith('.encrypted'):
+                        encrypted_file = os.path.join(root, file)
+                        os.remove(encrypted_file)
+                        deleted += 1
+            print(f"   ✅ Deleted {deleted} encrypted files.")
         
         self._log_access(username, str(folder_path), 'unlock', True)
     
