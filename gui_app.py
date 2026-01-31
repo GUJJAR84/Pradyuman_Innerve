@@ -699,6 +699,25 @@ class VoiceLockGUI:
         )
         add_account_btn.pack(pady=10, padx=20, fill="x")
         
+        # Danger Zone Separator
+        danger_sep = ctk.CTkLabel(sidebar, text="───────────", font=("Segoe UI", 10), text_color="gray")
+        danger_sep.pack(pady=(20, 10))
+        
+        # Delete Profile Button
+        delete_profile_btn = ctk.CTkButton(
+            sidebar,
+            text="⚠️ Delete Profile",
+            command=self.handle_delete_profile,
+            height=35,
+            font=("Segoe UI", 12),
+            fg_color="transparent",
+            text_color="#ef4444",
+            hover_color="#fee2e2",
+            border_width=1,
+            border_color="#ef4444"
+        )
+        delete_profile_btn.pack(pady=5, padx=20, fill="x")
+        
         # Right panel - Locked folders list
         right_panel = ctk.CTkFrame(content)
         right_panel.pack(side="right", fill="both", expand=True)
@@ -1336,6 +1355,80 @@ class VoiceLockGUI:
         thread = threading.Thread(target=authenticate_and_login, daemon=True)
         thread.start()
     
+    def handle_delete_profile(self):
+        """Delete current user profile after voice authentication"""
+        if not messagebox.askyesno("Delete Profile", "⚠️ DANGER: This will PERMANENTLY delete your voice profile and all saved credentials!\n\nThis action cannot be undone.\n\nAre you sure you want to proceed?"):
+            return
+            
+        # Voice authentication window
+        auth_window = ctk.CTkToplevel(self.root)
+        auth_window.title("Confirm Deletion")
+        auth_window.geometry("400x350")
+        auth_window.transient(self.root)
+        auth_window.grab_set()
+        
+        title = ctk.CTkLabel(auth_window, text="⚠️ Confirm Identity", font=("Segoe UI", 18, "bold"), text_color="#ef4444")
+        title.pack(pady=(30, 10))
+        
+        instruction = ctk.CTkLabel(auth_window, text=f"Authenticate to DELETE profile for '{self.current_user}'", font=("Segoe UI", 14), wraplength=350)
+        instruction.pack(pady=10)
+        
+        countdown_label = ctk.CTkLabel(auth_window, text="Get ready to speak...", font=("Segoe UI", 16))
+        countdown_label.pack(pady=20)
+        
+        progress = ctk.CTkProgressBar(auth_window, mode="determinate", progress_color="#ef4444")
+        progress.pack(pady=20, padx=40, fill="x")
+        progress.set(0)
+        
+        def authenticate_and_delete():
+            # Countdown
+            for i in range(3, 0, -1):
+                auth_window.after(0, lambda count=i: countdown_label.configure(text=f"🎯 {count}"))
+                import time
+                time.sleep(1)
+            
+            # Record
+            auth_window.after(0, lambda: countdown_label.configure(text="🔴 RECORDING! Speak now..."))
+            audio = self.voice_auth.record_audio(duration=5, show_countdown=False)
+            
+            # Verify
+            auth_window.after(0, lambda: countdown_label.configure(text="🔄 Verifying..."))
+            embedding = self.voice_auth.extract_embedding(audio)
+            
+            # Get enrolled embedding
+            enrolled_embedding = self.voice_auth.enrolled_embeddings[self.current_user]['embedding']
+            distance = self.voice_auth.compute_similarity(embedding, enrolled_embedding)
+            
+            # Check result
+            auth_window.after(0, auth_window.destroy)
+            
+            if distance > 0.3:
+                messagebox.showerror("Authentication Failed", f"❌ Voice mismatch! Profile deletion cancelled.\n\nDistance: {distance:.4f}")
+                return
+            
+            # Proceed with deletion if authenticated
+            if messagebox.askyesno("Final Confirmation", "✅ Identity Verified.\n\nType DELETE to confirm (wait, actually just click Yes).\n\nAre you ABSOLUTELY sure?"):
+                try:
+                    user_to_delete = self.current_user
+                    
+                    # 1. Delete all credentials
+                    cred_count = self.cred_manager.delete_all_credentials_for_user(user_to_delete)
+                    
+                    # 2. Delete voice profile
+                    self.voice_auth.remove_user(user_to_delete)
+                    
+                    messagebox.showinfo("Profile Deleted", f"🗑️ Profile for '{user_to_delete}' has been permanently deleted.\n- {cred_count} credentials removed\n- Voice profile removed")
+                    
+                    # 3. Force logout
+                    self.current_user = None
+                    self.show_login_screen()
+                    
+                except Exception as e:
+                    messagebox.showerror("Deletion Error", f"An error occurred while deleting profile: {e}")
+        
+        thread = threading.Thread(target=authenticate_and_delete, daemon=True)
+        thread.start()
+
     def handle_logout(self):
         """Logout current user"""
         if messagebox.askyesno("Logout", "Are you sure you want to logout?"):

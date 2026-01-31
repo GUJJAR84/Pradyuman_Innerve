@@ -222,6 +222,27 @@ class CredentialManager:
         except Exception as e:
             logger.error(f"❌ Failed to delete credentials: {e}")
             return False
+
+    def delete_all_credentials_for_user(self, owner: str) -> int:
+        """
+        Deletes all credentials for a specific user
+        
+        Args:
+            owner: Voice-authenticated user
+            
+        Returns:
+            Number of credentials deleted
+        """
+        deleted_count = 0
+        platforms = self.list_credentials(owner)
+        
+        for platform in platforms:
+            if self.delete_credential(platform, owner):
+                deleted_count += 1
+                
+        logger.info(f"🗑️ Deleted all {deleted_count} credentials for user {owner}")
+        return deleted_count
+
     
     def _pad(self, data: bytes) -> bytes:
         """
