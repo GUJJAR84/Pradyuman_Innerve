@@ -12,6 +12,8 @@ import json
 
 from voice_authenticator import VoiceAuthenticator
 from folder_encryption import FolderEncryption
+from credential_manager import CredentialManager
+from browser_automation import BrowserAutomation
 
 # Configure theme
 ctk.set_appearance_mode("dark")
@@ -26,6 +28,7 @@ class VoiceLockGUI:
         # Initialize backend
         self.voice_auth = None
         self.encryption = FolderEncryption()
+        self.cred_manager = CredentialManager()
         self.current_user = None
         self.config_file = 'folder_lock_config.json'
         self.config = self._load_config()
@@ -657,17 +660,44 @@ class VoiceLockGUI:
         )
         separator.pack(pady=15)
         
-        # Multi-folder lock button
-        multi_lock_btn = ctk.CTkButton(
+        # Social Media Accounts Section
+        social_title = ctk.CTkLabel(
             sidebar,
-            text="🔒📁 Lock Multiple Folders",
-            command=self.show_multi_lock_dialog,
-            height=50,
-            font=("Segoe UI", 13),
+            text="🌐 Social Media Accounts",
+            font=("Segoe UI", 14, "bold")
+        )
+        social_title.pack(pady=(10, 5), padx=20, anchor="w")
+        
+        # List saved platforms
+        try:
+            platforms = self.cred_manager.list_credentials(self.current_user)
+            
+            if platforms:
+                for platform in platforms:
+                    login_btn = ctk.CTkButton(
+                        sidebar,
+                        text=f"🚀 Login to {platform}",
+                        command=lambda p=platform: self.voice_login_platform(p),
+                        height=40,
+                        font=("Segoe UI", 12),
+                        fg_color="#059669",
+                        hover_color="#047857"
+                    )
+                    login_btn.pack(pady=5, padx=20, fill="x")
+        except Exception as e:
+            pass  # Silently handle errors - button will still show below
+        
+        # Add account button (always show this)
+        add_account_btn = ctk.CTkButton(
+            sidebar,
+            text="➕ Add Account",
+            command=self.show_add_credential_dialog,
+            height=40,
+            font=("Segoe UI", 12),
             fg_color="#0891b2",
             hover_color="#0e7490"
         )
-        multi_lock_btn.pack(pady=10, padx=20, fill="x")
+        add_account_btn.pack(pady=10, padx=20, fill="x")
         
         # Right panel - Locked folders list
         right_panel = ctk.CTkFrame(content)
@@ -1197,6 +1227,114 @@ class VoiceLockGUI:
             font=("Segoe UI", 14)
         )
         close_btn.pack(pady=20)
+    
+    def show_add_credential_dialog(self):
+        """Show dialog to add social media credentials"""
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title("Add Social Media Account")
+        dialog.geometry("500x550")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        title = ctk.CTkLabel(dialog, text="🌐 Add New Account", font=("Segoe UI", 20, "bold"))
+        title.pack(pady=20)
+        
+        platform_label = ctk.CTkLabel(dialog, text="Platform:", font=("Segoe UI", 13))
+        platform_label.pack(pady=(10, 5))
+        platform_var = ctk.StringVar(value="Gmail")
+        platform_menu = ctk.CTkOptionMenu(dialog, variable=platform_var, values=["Gmail", "Instagram", "Twitter", "GitHub"], width=300, font=("Segoe UI", 12))
+        platform_menu.pack(pady=5)
+        
+        username_label = ctk.CTkLabel(dialog, text="Username / Email:", font=("Segoe UI", 13))
+        username_label.pack(pady=(15, 5))
+        username_entry = ctk.CTkEntry(dialog, width=300, font=("Segoe UI", 12), placeholder_text="Enter username or email")
+        username_entry.pack(pady=5)
+        
+        password_label = ctk.CTkLabel(dialog, text="Password:", font=("Segoe UI", 13))
+        password_label.pack(pady=(15, 5))
+        password_entry = ctk.CTkEntry(dialog, width=300, font=("Segoe UI", 12), placeholder_text="Enter password", show="•")
+        password_entry.pack(pady=5)
+        
+        def save_credential():
+            platform = platform_var.get()
+            username = username_entry.get().strip()
+            password = password_entry.get()
+            if not username or not password:
+                messagebox.showerror("Error", "Please fill in all fields!")
+                return
+            success = self.cred_manager.add_credential(platform, username, password, self.current_user)
+            if success:
+                dialog.destroy()
+                messagebox.showinfo("Success", f"✅ {platform} account saved securely!\\n\\nYou can now login using your voice.")
+                self.show_main_dashboard()
+            else:
+                messagebox.showerror("Error", f"Failed to save {platform} account")
+        
+        save_btn = ctk.CTkButton(dialog, text="💾 Save Account", command=save_credential, height=45, font=("Segoe UI", 14, "bold"), fg_color="#059669", hover_color="#047857")
+        save_btn.pack(pady=30)
+    
+    def voice_login_platform(self, platform):
+        """Voice-authenticated login to social media platform"""
+        auth_window = ctk.CTkToplevel(self.root)
+        auth_window.title(f"Login to {platform}")
+        auth_window.geometry("400x350")
+        auth_window.transient(self.root)
+        auth_window.grab_set()
+        
+        title = ctk.CTkLabel(auth_window, text=f"🎤 Voice Authentication", font=("Segoe UI", 18, "bold"))
+        title.pack(pady=(30, 10))
+        instruction = ctk.CTkLabel(auth_window, text=f"Authenticate to login to {platform}", font=("Segoe UI", 14))
+        instruction.pack(pady=10)
+        countdown_label = ctk.CTkLabel(auth_window, text="Get ready to speak...", font=("Segoe UI", 16))
+        countdown_label.pack(pady=20)
+        progress = ctk.CTkProgressBar(auth_window, mode="determinate")
+        progress.pack(pady=20, padx=40, fill="x")
+        progress.set(0)
+        
+        def authenticate_and_login():
+            for i in range(3, 0, -1):
+                auth_window.after(0, lambda count=i: countdown_label.configure(text=f"🎯 {count}"))
+                import time
+                time.sleep(1)
+            auth_window.after(0, lambda: countdown_label.configure(text="🔴 RECORDING! Speak now..."))
+            audio = self.voice_auth.record_audio(duration=5, show_countdown=False)
+            auth_window.after(0, lambda: countdown_label.configure(text="🔄 Verifying..."))
+            embedding = self.voice_auth.extract_embedding(audio)
+            distance = self.voice_auth.compute_similarity(embedding, self.voice_auth.enrolled_embeddings[self.current_user]['embedding'])
+            auth_window.after(0, auth_window.destroy)
+            if distance > 0.3:
+                messagebox.showerror("Authentication Failed", f"❌ Voice authentication failed!\\n\\nDistance: {distance:.4f}")
+                return
+            try:
+                credentials = self.cred_manager.get_credential(platform, self.current_user)
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to retrieve credentials: {str(e)}")
+                return
+            browser = BrowserAutomation()
+            try:
+                if platform == "GitHub":
+                    success = browser.login_github(credentials['username'], credentials['password'])
+                elif platform == "Instagram":
+                    success = browser.login_instagram(credentials['username'], credentials['password'])
+                elif platform == "Gmail":
+                    success = browser.login_gmail(credentials['username'], credentials['password'])
+                elif platform == "Twitter":
+                    success = browser.login_twitter(credentials['username'], credentials['password'])
+                else:
+                    success = False
+                credentials = None
+                if success:
+                    messagebox.showinfo("Success", f"✅ Logged into {platform}!\\n\\nBrowser window will stay open.")
+                    browser.keep_alive()
+                else:
+                    messagebox.showerror("Login Failed", f"❌ Failed to login to {platform}\\n\\nPlease check your credentials.")
+                    browser.close()
+            except Exception as e:
+                messagebox.showerror("Error", f"Browser automation error: {str(e)}")
+                browser.close()
+        
+        thread = threading.Thread(target=authenticate_and_login, daemon=True)
+        thread.start()
     
     def handle_logout(self):
         """Logout current user"""
